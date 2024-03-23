@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
+	"strings"
 	"syscall"
 
 	"g2g/pkg/pack"
@@ -18,6 +20,7 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
@@ -61,8 +64,8 @@ func main() {
 	}
 
 	// Associate stream protocols to git services
-	node.SetStreamHandler(specs.UploadPackProto, UploadPackHandler)
-	node.SetStreamHandler(specs.ReceivePackProto, ReceivePackHandler)
+	node.SetStreamHandlerMatch(specs.UploadPackProto, func(i protocol.ID) bool { return strings.HasPrefix(string(i), specs.UploadPackProto) }, UploadPackHandler)
+	node.SetStreamHandlerMatch(specs.ReceivePackProto, func(i protocol.ID) bool { return strings.HasPrefix(string(i), specs.ReceivePackProto) }, ReceivePackHandler)
 	defer node.Close()
 
 	// git-g2g terminates upon Ctrl-C
@@ -87,7 +90,8 @@ func loadPrivateKey() (crypto.PrivKey, error) {
 func UploadPackHandler(s network.Stream) {
 	defer s.Reset()
 
-	cmd := exec.Command("git", "upload-pack", "test_repo")
+	dir := path.Base(string(s.Protocol()))
+	cmd := exec.Command("git", "upload-pack", dir)
 	cmd.Dir = GetRepositoryDir()
 	stdin, _ := cmd.StdinPipe() // read fetch-pack, not used
 	stdout, _ := cmd.StdoutPipe()
@@ -118,7 +122,8 @@ func UploadPackHandler(s network.Stream) {
 func ReceivePackHandler(s network.Stream) {
 	defer s.Reset()
 
-	cmd := exec.Command("git", "receive-pack", "test_repo")
+	dir := path.Base(string(s.Protocol()))
+	cmd := exec.Command("git", "receive-pack", dir)
 	cmd.Dir = GetRepositoryDir()
 	stdin, _ := cmd.StdinPipe()
 	stdout, _ := cmd.StdoutPipe()

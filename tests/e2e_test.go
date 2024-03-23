@@ -12,9 +12,10 @@ import (
 )
 
 func InitBareRepository(t *testing.T) (string, error) {
-	// dir := t.TempDir()
-	dir := "/tmp/test_repo"
-	_, err := exec.Command("git", "init", "--bare", dir).Output()
+	home, _ := os.UserHomeDir()
+	parentDir := path.Join(home, ".g2g", "repos")
+	dir, _ := os.MkdirTemp(parentDir, "*.git")
+	_, err := exec.Command("git", "init", "--bare", dir).CombinedOutput()
 	return dir, err
 }
 
@@ -23,10 +24,9 @@ func TestMain(t *testing.T) {
 	if err != nil {
 		t.Error("Could not initiate random bare repository.")
 	}
-	defer os.RemoveAll(dir)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(func() { os.RemoveAll(dir); cancel() })
 
 	server := exec.CommandContext(ctx, "git-g2g", "git", "g2g")
 	serverOut, _ := server.StdoutPipe()
@@ -45,8 +45,9 @@ func TestMain(t *testing.T) {
 
 	go func() {
 		addr := <-ch
+		remoteAddr := addr + "/" + path.Base(dir)
 		cloneDir := t.TempDir()
-		if err := exec.Command("git", "clone", addr, cloneDir).Run(); err != nil {
+		if err := exec.Command("git", "clone", remoteAddr, cloneDir).Run(); err != nil {
 			t.Fail()
 		}
 
@@ -70,7 +71,7 @@ func TestMain(t *testing.T) {
 		}
 
 		cmd = exec.Command("git", "--no-pager", "log", "--pretty=oneline")
-		cmd.Dir = "/tmp/test_repo"
+		cmd.Dir = dir
 		serverLog, _ := cmd.Output()
 
 		cmd = exec.Command("git", "--no-pager", "log", "--pretty=oneline")

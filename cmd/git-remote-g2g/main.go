@@ -8,11 +8,14 @@ import (
 	"g2g/pkg/specs"
 	"io"
 	"os"
+	"regexp"
+	"strings"
 
 	golog "github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 var logger = golog.Logger("remote-helper")
@@ -26,7 +29,11 @@ func main() {
 		logger.Fatalln("Usage: git-remote-g2g <remoteName> <multiAddr>")
 	}
 
-	repo, err := NewRepo(args[2])
+	ma, repoId, err := ParseRemoteAddr(args[2])
+	if err != nil {
+		logger.Fatalln(err)
+	}
+	repo, err := NewRepo(ma)
 	if err != nil {
 		logger.Fatalln(err)
 	}
@@ -48,11 +55,11 @@ func main() {
 		case command == "capabilities\n":
 			PrintCapabilities(os.Stdout)
 		case command == "connect git-upload-pack\n":
-			if err = ConnectUploadPack(node, ctx, repo.address.ID); err != nil {
+			if err = ConnectUploadPack(node, ctx, repo.address.ID, repoId); err != nil {
 				logger.Fatalln(err)
 			}
 		case command == "connect git-receive-pack\n":
-			if err = ConnectReceivePack(node, ctx, repo.address.ID); err != nil {
+			if err = ConnectReceivePack(node, ctx, repo.address.ID, repoId); err != nil {
 				logger.Fatalln(err)
 			}
 		default:
@@ -66,9 +73,10 @@ func PrintCapabilities(w io.Writer) {
 	fmt.Fprintln(w, "")
 }
 
-func ConnectUploadPack(node host.Host, ctx context.Context, peerId peer.ID) (err error) {
+func ConnectUploadPack(node host.Host, ctx context.Context, peerId peer.ID, repository string) (err error) {
 	// Connects to given git service.
-	s, err := node.NewStream(ctx, peerId, specs.UploadPackProto)
+	proto := strings.Join([]string{specs.UploadPackProto, repository}, "/")
+	s, err := node.NewStream(ctx, peerId, protocol.ConvertFromStrings([]string{proto})...)
 	if err != nil {
 		return err
 	}
@@ -107,9 +115,10 @@ func ConnectUploadPack(node host.Host, ctx context.Context, peerId peer.ID) (err
 	return
 }
 
-func ConnectReceivePack(node host.Host, ctx context.Context, peerId peer.ID) (err error) {
+func ConnectReceivePack(node host.Host, ctx context.Context, peerId peer.ID, repository string) (err error) {
 	// Connects to given git service.
-	s, err := node.NewStream(ctx, peerId, specs.ReceivePackProto)
+	proto := strings.Join([]string{specs.ReceivePackProto, repository}, "/")
+	s, err := node.NewStream(ctx, peerId, protocol.ConvertFromStrings([]string{proto})...)
 	if err != nil {
 		return err
 	}
@@ -160,5 +169,25 @@ func ConnectReceivePack(node host.Host, ctx context.Context, peerId peer.ID) (er
 	// After the connection ends, the remote helper exits.
 	s.Reset()
 	os.Exit(0)
+	return
+}
+
+func ParseRemoteAddr(addr string) (ma string, repoId string, err error) {
+	re, _ := regexp.Compile(`^g2g:\/\/(?P<ma>(\/[\w\.]+)+)\/(?P<repoId>\w+\.git)$`)
+	if !re.MatchString(addr) {
+		err = fmt.Errorf("remote address does not end with \".git\"")
+		return
+	}
+
+	match := re.FindStringSubmatch(addr)
+	result := make(map[string]string)
+	for i, name := range re.SubexpNames() {
+		if i != 0 && name != "" {
+			result[name] = match[i]
+		}
+	}
+
+	repoId = result["repoId"]
+	ma = result["ma"]
 	return
 }

@@ -1,8 +1,6 @@
 package main
 
 import (
-	"strings"
-
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
@@ -13,8 +11,7 @@ type Repository struct {
 	address *peer.AddrInfo
 }
 
-func NewRepo(url string) (repo Repository, err error) {
-	address := strings.Replace(url, "g2g://", "", 1)
+func NewRepo(address string) (repo Repository, err error) {
 	multiaddr, err := ma.NewMultiaddr(address)
 	if err != nil {
 		return
