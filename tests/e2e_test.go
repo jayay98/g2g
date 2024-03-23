@@ -2,13 +2,14 @@ package tests
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"os"
 	"os/exec"
 	"path"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func InitBareRepository(t *testing.T) (string, error) {
@@ -21,9 +22,7 @@ func InitBareRepository(t *testing.T) (string, error) {
 
 func TestMain(t *testing.T) {
 	dir, err := InitBareRepository(t)
-	if err != nil {
-		t.Error("Could not initiate random bare repository.")
-	}
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { os.RemoveAll(dir); cancel() })
@@ -39,36 +38,26 @@ func TestMain(t *testing.T) {
 		ch <- ma
 		close(ch)
 	}()
-	if err = server.Start(); err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, server.Start())
 
 	go func() {
 		addr := <-ch
 		remoteAddr := addr + "/" + path.Base(dir)
 		cloneDir := t.TempDir()
-		if err := exec.Command("git", "clone", remoteAddr, cloneDir).Run(); err != nil {
-			t.Fail()
-		}
+		require.NoError(t, exec.Command("git", "clone", remoteAddr, cloneDir).Run())
 
 		os.WriteFile(path.Join(cloneDir, "README.md"), []byte("# Sample"), 0644)
 		cmd := exec.Command("git", "add", ".")
 		cmd.Dir = cloneDir
-		if err = cmd.Run(); err != nil {
-			t.Error(err)
-		}
+		require.NoError(t, cmd.Run())
 
 		cmd = exec.Command("git", "commit", "-m", "First commit")
 		cmd.Dir = cloneDir
-		if err = cmd.Run(); err != nil {
-			t.Error(err)
-		}
+		require.NoError(t, cmd.Run())
 
 		cmd = exec.Command("git", "push")
 		cmd.Dir = cloneDir
-		if err = cmd.Run(); err != nil {
-			t.Error(err)
-		}
+		require.NoError(t, cmd.Run())
 
 		cmd = exec.Command("git", "--no-pager", "log", "--pretty=oneline")
 		cmd.Dir = dir
@@ -78,9 +67,7 @@ func TestMain(t *testing.T) {
 		cmd.Dir = cloneDir
 		clientLog, _ := cmd.Output()
 
-		if !bytes.Equal(serverLog, clientLog) {
-			t.Fail()
-		}
+		require.Equal(t, serverLog, clientLog)
 		cancel()
 	}()
 

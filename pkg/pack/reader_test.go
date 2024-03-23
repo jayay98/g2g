@@ -3,6 +3,8 @@ package pack
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestPackReader(t *testing.T) {
@@ -18,7 +20,7 @@ func TestPackReader(t *testing.T) {
 	n, err := br.Read(out)
 	outFit := make([]byte, n)
 	copy(outFit, out)
-	if string(outFit) != inputs[0] || err != nil {
-		t.Fatalf("n: %v | err: %v | s: %#q", n, err, string(outFit))
-	}
+
+	require.Equal(t, string(outFit), inputs[0])
+	require.NoError(t, err)
 }
