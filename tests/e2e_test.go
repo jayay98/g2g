@@ -18,18 +18,7 @@ func InitBareRepository(t *testing.T) (string, error) {
 	return dir, err
 }
 
-func CreatePrivateKey(keyPath string) error {
-	_, err := exec.Command("ssh-keygen", "-t", "ecdsa", "-q", "-f", keyPath, "-N", "", "-m", "PEM").Output()
-	return err
-}
-
 func TestMain(t *testing.T) {
-	if err := CreatePrivateKey("/tmp/key.pem"); err != nil {
-		t.Error("Could not initiate private key.")
-	}
-	defer os.Remove("/tmp/key.pem")
-	defer os.Remove("/tmp/key.pem.pub")
-
 	dir, err := InitBareRepository(t)
 	if err != nil {
 		t.Error("Could not initiate random bare repository.")

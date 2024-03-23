@@ -29,17 +29,21 @@ func main() {
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	keyPath := "/tmp/key.pem"
-	blob, _ := os.ReadFile(keyPath)
-	block, _ := pem.Decode(blob)
-	if block == nil {
-		log.Fatalf("No PEM blob found")
+	// Initialize FS
+	appDir := GetAppDir()
+	if err := MkDir(appDir); err != nil {
+		log.Fatalf("Failed to initialize application directory: %v", err)
 	}
-	priv, err := crypto.UnmarshalECDSAPrivateKey(block.Bytes)
+	repoDir := GetRepositoryDir()
+	if err := MkDir(repoDir); err != nil {
+		log.Fatalf("Failed to initialize repository directory: %v", err)
+	}
+	priv, err := loadPrivateKey()
 	if err != nil {
-		log.Fatalf("Failed to parse private key: %v", err)
+		log.Fatalf("Failed to load private key: %v", err)
 	}
 
+	// Initialize libp2p Host
 	opts := []libp2p.Option{
 		libp2p.ListenAddrStrings(specs.HostAddress),
 		libp2p.Identity(priv),
@@ -49,83 +53,103 @@ func main() {
 		log.Fatalf("Failed to parse private key: %v", err)
 	}
 
-	node.SetStreamHandler(specs.UploadPackProto, func(s network.Stream) {
-		defer s.Reset()
-
-		cmd := exec.Command("git", "upload-pack", "/tmp/test_repo")
-		stdin, _ := cmd.StdinPipe() // read fetch-pack, not used
-		stdout, _ := cmd.StdoutPipe()
-
-		go func() {
-			scn := pack.NewScanner(stdout)
-			for scn.Scan() {
-				s.Write(scn.Bytes())
-			}
-		}()
-		go func() {
-			scn := pack.NewScanner(s)
-			for scn.Scan() {
-				stdin.Write(scn.Bytes())
-			}
-		}()
-
-		if err = cmd.Start(); err != nil {
-			logger.Warnln(err)
-			return
-		}
-
-		if err := cmd.Wait(); err != nil {
-			logger.Fatal(err)
-		}
-	})
-
-	node.SetStreamHandler(specs.ReceivePackProto, func(s network.Stream) {
-		defer s.Reset()
-
-		cmd := exec.Command("git", "receive-pack", "/tmp/test_repo")
-		stdin, _ := cmd.StdinPipe() // read fetch-pack, not used
-		stdout, _ := cmd.StdoutPipe()
-
-		go func() {
-			scn := pack.NewScanner(stdout)
-			for scn.Scan() {
-				s.Write(scn.Bytes())
-			}
-		}()
-		go func() {
-			scn := pack.NewScanner(s)
-			for scn.Scan() {
-				stdin.Write(scn.Bytes())
-			}
-
-			r := bufio.NewReader(s)
-			b := make([]byte, 512)
-
-			for {
-				r.Read(b)
-				stdin.Write(b)
-			}
-		}()
-
-		if err = cmd.Start(); err != nil {
-			logger.Warnln(err)
-			return
-		}
-
-		if err := cmd.Wait(); err != nil {
-			logger.Fatal(err)
-		}
-	})
-
+	// Prints on STDOUT the libp2p addresses
 	for _, addr := range node.Addrs() {
 		hostAddr, _ := ma.NewMultiaddr(fmt.Sprintf("/p2p/%s", node.ID().Pretty()))
 		p2pAddr := addr.Encapsulate(hostAddr).String()
 		fmt.Printf("Serving on g2g://%s\n", p2pAddr)
 	}
 
+	// Associate stream protocols to git services
+	node.SetStreamHandler(specs.UploadPackProto, UploadPackHandler)
+	node.SetStreamHandler(specs.ReceivePackProto, ReceivePackHandler)
 	defer node.Close()
 
+	// git-g2g terminates upon Ctrl-C
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	<-sigCh
+}
+
+func loadPrivateKey() (crypto.PrivKey, error) {
+	keyPath := GetPrivKeyPath()
+	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+		exec.Command("ssh-keygen", "-t", "ecdsa", "-q", "-f", keyPath, "-N", "", "-m", "PEM").Run()
+	}
+	blob, _ := os.ReadFile(keyPath)
+	block, _ := pem.Decode(blob)
+	if block == nil {
+		return nil, fmt.Errorf("no PEM blob found")
+	}
+	return crypto.UnmarshalECDSAPrivateKey(block.Bytes)
+}
+
+func UploadPackHandler(s network.Stream) {
+	defer s.Reset()
+
+	cmd := exec.Command("git", "upload-pack", "test_repo")
+	cmd.Dir = GetRepositoryDir()
+	stdin, _ := cmd.StdinPipe() // read fetch-pack, not used
+	stdout, _ := cmd.StdoutPipe()
+
+	go func() {
+		scn := pack.NewScanner(stdout)
+		for scn.Scan() {
+			s.Write(scn.Bytes())
+		}
+	}()
+	go func() {
+		scn := pack.NewScanner(s)
+		for scn.Scan() {
+			stdin.Write(scn.Bytes())
+		}
+	}()
+
+	if err := cmd.Start(); err != nil {
+		logger.Warnln(err)
+		return
+	}
+
+	if err := cmd.Wait(); err != nil {
+		logger.Fatal(err)
+	}
+}
+
+func ReceivePackHandler(s network.Stream) {
+	defer s.Reset()
+
+	cmd := exec.Command("git", "receive-pack", "test_repo")
+	cmd.Dir = GetRepositoryDir()
+	stdin, _ := cmd.StdinPipe()
+	stdout, _ := cmd.StdoutPipe()
+
+	go func() {
+		scn := pack.NewScanner(stdout)
+		for scn.Scan() {
+			s.Write(scn.Bytes())
+		}
+	}()
+	go func() {
+		scn := pack.NewScanner(s)
+		for scn.Scan() {
+			stdin.Write(scn.Bytes())
+		}
+
+		r := bufio.NewReader(s)
+		b := make([]byte, 512)
+
+		for {
+			r.Read(b)
+			stdin.Write(b)
+		}
+	}()
+
+	if err := cmd.Start(); err != nil {
+		logger.Warnln(err)
+		return
+	}
+
+	if err := cmd.Wait(); err != nil {
+		logger.Fatal(err)
+	}
 }
