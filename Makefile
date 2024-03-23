@@ -23,4 +23,4 @@ fmt:
 
 .PHONY:
 test:
-	go test g2g/tests && go test g2g/pkg/pack
+	go test g2g/tests -count=1 && go test g2g/pkg/pack -count=1
