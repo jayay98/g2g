@@ -42,6 +42,7 @@ func main() {
 	if err != nil {
 		logger.Fatalln(err)
 	}
+	defer node.Close()
 	repo.AddAddressInto(node)
 
 	stdinReader := bufio.NewReader(os.Stdin)
@@ -173,7 +174,7 @@ func ConnectReceivePack(node host.Host, ctx context.Context, peerId peer.ID, rep
 }
 
 func ParseRemoteAddr(addr string) (ma string, repoId string, err error) {
-	re, _ := regexp.Compile(`^g2g:\/\/(?P<ma>(\/[\w\.]+)+)\/(?P<repoId>\w+\.git)$`)
+	re, _ := regexp.Compile(`^g2g:\/\/(?P<ma>(\/[\w\.]+)+)\/(?P<repoId>[\w_-]+\.git)$`)
 	if !re.MatchString(addr) {
 		err = fmt.Errorf("remote address does not end with \".git\"")
 		return
