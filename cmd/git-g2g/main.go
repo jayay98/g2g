@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/pem"
 	"fmt"
@@ -9,19 +8,21 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path"
 	"strings"
+	"sync"
 	"syscall"
 
-	"g2g/pkg/pack"
 	"g2g/pkg/specs"
 
 	golog "github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
-	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	ma "github.com/multiformats/go-multiaddr"
+
+	dht "github.com/libp2p/go-libp2p-kad-dht"
+	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
 )
 
 var logger = golog.Logger("git-server")
@@ -33,12 +34,12 @@ func main() {
 	defer cancel()
 
 	// Initialize FS
-	appDir := GetAppDir()
-	if err := MkDir(appDir); err != nil {
+	appDir := getAppDir()
+	if err := mkDir(appDir); err != nil {
 		log.Fatalf("Failed to initialize application directory: %v", err)
 	}
-	repoDir := GetRepositoryDir()
-	if err := MkDir(repoDir); err != nil {
+	repoDir := getRepositoryDir()
+	if err := mkDir(repoDir); err != nil {
 		log.Fatalf("Failed to initialize repository directory: %v", err)
 	}
 	priv, err := loadPrivateKey()
@@ -55,8 +56,49 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to parse private key: %v", err)
 	}
+	defer node.Close()
+	// ids, err := identify.NewIDService(node)
+	// if err != nil {
+	// 	log.Fatalf("Failed to initialize identity service")
+	// }
+	// defer ids.Close()
+	// hps, err := holepunch.NewService(node, ids)
+	// if err != nil {
+	// 	log.Fatalf("Failed to initialize holepunch service")
+	// }
+	// defer hps.Close()
 
-	// Prints on STDOUT the libp2p addresses
+	// Boostrap
+	var wg sync.WaitGroup
+	ctx := context.Background()
+	for _, peerAddr := range dht.DefaultBootstrapPeers {
+		peerinfo, _ := peer.AddrInfoFromP2pAddr(peerAddr)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := node.Connect(ctx, *peerinfo); err != nil {
+				logger.Warning(err)
+			} else {
+				logger.Debug("Connection established with bootstrap node:", *peerinfo)
+				relayaddr, _ := ma.NewMultiaddr("/p2p/" + peerinfo.ID.String() + "/p2p-circuit/p2p/" + node.ID().String())
+				_, err = client.Reserve(context.Background(), node, *peerinfo)
+				if err != nil {
+					log.Printf("server failed to receive a relay reservation from relays. %v", err)
+					return
+				}
+				for _, addr := range peerinfo.Addrs {
+					p2pAddr := addr.Encapsulate(relayaddr).String()
+					fmt.Printf("Serving on g2g://%s\n", p2pAddr)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	// TODO - Relay
+	// TODO - Upgrade to holepunching
+
+	// // Prints on STDOUT the libp2p addresses
 	for _, addr := range node.Addrs() {
 		hostAddr, _ := ma.NewMultiaddr(fmt.Sprintf("/p2p/%s", node.ID().Pretty()))
 		p2pAddr := addr.Encapsulate(hostAddr).String()
@@ -64,9 +106,8 @@ func main() {
 	}
 
 	// Associate stream protocols to git services
-	node.SetStreamHandlerMatch(specs.UploadPackProto, func(i protocol.ID) bool { return strings.HasPrefix(string(i), specs.UploadPackProto) }, UploadPackHandler)
-	node.SetStreamHandlerMatch(specs.ReceivePackProto, func(i protocol.ID) bool { return strings.HasPrefix(string(i), specs.ReceivePackProto) }, ReceivePackHandler)
-	defer node.Close()
+	node.SetStreamHandlerMatch(specs.UploadPackProto, func(i protocol.ID) bool { return strings.HasPrefix(string(i), specs.UploadPackProto) }, uploadPackHandler)
+	node.SetStreamHandlerMatch(specs.ReceivePackProto, func(i protocol.ID) bool { return strings.HasPrefix(string(i), specs.ReceivePackProto) }, receivePackHandler)
 
 	// git-g2g terminates upon Ctrl-C
 	sigCh := make(chan os.Signal, 1)
@@ -75,7 +116,7 @@ func main() {
 }
 
 func loadPrivateKey() (crypto.PrivKey, error) {
-	keyPath := GetPrivKeyPath()
+	keyPath := getPrivKeyPath()
 	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
 		exec.Command("ssh-keygen", "-t", "ecdsa", "-q", "-f", keyPath, "-N", "", "-m", "PEM").Run()
 	}
@@ -85,76 +126,4 @@ func loadPrivateKey() (crypto.PrivKey, error) {
 		return nil, fmt.Errorf("no PEM blob found")
 	}
 	return crypto.UnmarshalECDSAPrivateKey(block.Bytes)
-}
-
-func UploadPackHandler(s network.Stream) {
-	defer s.Reset()
-
-	dir := path.Base(string(s.Protocol()))
-	cmd := exec.Command("git", "upload-pack", dir)
-	cmd.Dir = GetRepositoryDir()
-	stdin, _ := cmd.StdinPipe() // read fetch-pack, not used
-	stdout, _ := cmd.StdoutPipe()
-
-	go func() {
-		scn := pack.NewScanner(stdout)
-		for scn.Scan() {
-			s.Write(scn.Bytes())
-		}
-	}()
-	go func() {
-		scn := pack.NewScanner(s)
-		for scn.Scan() {
-			stdin.Write(scn.Bytes())
-		}
-	}()
-
-	if err := cmd.Start(); err != nil {
-		logger.Warnln(err)
-		return
-	}
-
-	if err := cmd.Wait(); err != nil {
-		logger.Fatal(err)
-	}
-}
-
-func ReceivePackHandler(s network.Stream) {
-	defer s.Reset()
-
-	dir := path.Base(string(s.Protocol()))
-	cmd := exec.Command("git", "receive-pack", dir)
-	cmd.Dir = GetRepositoryDir()
-	stdin, _ := cmd.StdinPipe()
-	stdout, _ := cmd.StdoutPipe()
-
-	go func() {
-		scn := pack.NewScanner(stdout)
-		for scn.Scan() {
-			s.Write(scn.Bytes())
-		}
-	}()
-	go func() {
-		scn := pack.NewScanner(s)
-		for scn.Scan() {
-			stdin.Write(scn.Bytes())
-		}
-
-		r := bufio.NewReader(s)
-		b := make([]byte, 512)
-
-		for {
-			r.Read(b)
-			stdin.Write(b)
-		}
-	}()
-
-	if err := cmd.Start(); err != nil {
-		logger.Warnln(err)
-		return
-	}
-
-	if err := cmd.Wait(); err != nil {
-		logger.Fatal(err)
-	}
 }

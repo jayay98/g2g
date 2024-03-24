@@ -5,7 +5,7 @@ import (
 	"path"
 )
 
-func MkDir(dir string) (err error) {
+func mkDir(dir string) (err error) {
 	if _, err = os.Stat(dir); os.IsNotExist(err) {
 		err = os.Mkdir(dir, 0755)
 	}
@@ -13,17 +13,17 @@ func MkDir(dir string) (err error) {
 	return
 }
 
-func GetAppDir() string {
+func getAppDir() string {
 	home, _ := os.UserHomeDir()
 	return path.Join(home, ".g2g")
 }
 
-func GetRepositoryDir() string {
-	appDir := GetAppDir()
+func getRepositoryDir() string {
+	appDir := getAppDir()
 	return path.Join(appDir, "repos")
 }
 
-func GetPrivKeyPath() string {
-	appDir := GetAppDir()
+func getPrivKeyPath() string {
+	appDir := getAppDir()
 	return path.Join(appDir, "key.pem")
 }
